@@ -78,6 +78,51 @@ export function tagFilterArg(tags: string[] | undefined): string {
   return JSON.stringify(tags ?? []);
 }
 
+export interface CardEditInput {
+  front?: string;
+  back?: string;
+  ipa?: string | null;
+  examples?: string[];
+  tags?: string[];
+}
+
+export interface CardUpdateSql {
+  setClauses: string[];
+  bindArgs: unknown[];
+}
+
+// Build the SET clauses + bind args for an UPDATE on the `cards` table.
+// Only user-editable columns are supported; status/FSRS/image_url/created_at are
+// intentionally not handled here — dedicated tools and submit_rating own those.
+export function buildCardUpdate(input: CardEditInput): CardUpdateSql {
+  const setClauses: string[] = [];
+  const bindArgs: unknown[] = [];
+  if (input.front !== undefined) {
+    setClauses.push('front = ?');
+    bindArgs.push(input.front);
+  }
+  if (input.back !== undefined) {
+    setClauses.push('back = ?');
+    bindArgs.push(input.back);
+  }
+  if (input.ipa !== undefined) {
+    setClauses.push('ipa = ?');
+    bindArgs.push(input.ipa);
+  }
+  if (input.examples !== undefined) {
+    setClauses.push('examples = ?');
+    bindArgs.push(JSON.stringify(input.examples));
+  }
+  if (input.tags !== undefined) {
+    setClauses.push('tags = ?');
+    bindArgs.push(JSON.stringify(input.tags));
+  }
+  if (setClauses.length === 0) {
+    throw new Error('no editable fields');
+  }
+  return { setClauses, bindArgs };
+}
+
 function parseStringArray(raw: unknown, field: string, cardId: string): string[] {
   try {
     const parsed = JSON.parse(String(raw));

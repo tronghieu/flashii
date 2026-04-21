@@ -2,10 +2,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getMcpAuthContext } from 'agents/mcp';
 import { z } from 'zod';
-import { buildNewCard, rowToCard, tagFilterArg } from '../core/cards.js';
+import { buildCardUpdate, buildNewCard, rowToCard, tagFilterArg } from '../core/cards.js';
 import { applyRating } from '../core/reviews.js';
 import type { Card, RatingValue } from '../core/types.js';
-import type { Client } from '@libsql/client/web';
+import type { Client, InArgs } from '@libsql/client/web';
 import { withReadRetry } from '../infra/db.js';
 import { generateImage } from '../infra/gemini.js';
 import { storeImage } from '../infra/images.js';
@@ -355,6 +355,264 @@ export function createServer(): McpServer {
     },
   );
 
+  const editableRefineMsg =
+    'at least one of front/back/ipa/examples/tags is required';
+
+  server.registerTool(
+    'edit_card',
+    {
+      description: [
+        'Edit one or more user-visible fields of a card: `front`, `back`, `ipa`, `examples`, `tags`.',
+        '',
+        'Provide `card_id` plus at least one editable field. Fields you omit are left untouched.',
+        '',
+        'Semantics:',
+        '- `tags` **overwrites** the existing tag list (not merge). Read the current tags with `list_cards` first if you want to add to them.',
+        '- `examples` overwrites too.',
+        '- `ipa` accepts `null` to clear it.',
+        '- `status`, image, FSRS state, and scheduling are **not** editable here. Use `suspend_card` / `unsuspend_card` / `submit_rating` / `delete_card` for those.',
+      ].join('\n'),
+      inputSchema: {
+        card_id: z.string().min(1),
+        front: z.string().min(1).max(200).optional(),
+        back: z.string().min(1).max(2000).optional(),
+        ipa: z.string().max(200).nullable().optional(),
+        examples: z.array(z.string().min(1).max(500)).min(2).max(3).optional(),
+        tags: z.array(z.string().min(1).max(64)).max(16).optional(),
+      },
+      outputSchema: fullCardShape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (args) => {
+      if (
+        args.front === undefined &&
+        args.back === undefined &&
+        args.ipa === undefined &&
+        args.examples === undefined &&
+        args.tags === undefined
+      ) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: editableRefineMsg }],
+        };
+      }
+      const { userId, db } = readCtx();
+      const { setClauses, bindArgs } = buildCardUpdate({
+        front: args.front,
+        back: args.back,
+        ipa: args.ipa,
+        examples: args.examples,
+        tags: args.tags,
+      });
+      const updateRes = await db.execute({
+        sql: `UPDATE cards SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`,
+        args: [...bindArgs, args.card_id, userId] as InArgs,
+      });
+      if (updateRes.rowsAffected === 0) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Card not found: ${args.card_id}` }],
+        };
+      }
+      const { rows } = await withReadRetry(() =>
+        db.execute({
+          sql: 'SELECT * FROM cards WHERE id = ? AND user_id = ? LIMIT 1',
+          args: [args.card_id, userId],
+        }),
+      );
+      const row = rows[0];
+      if (!row) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Card not found: ${args.card_id}` }],
+        };
+      }
+      const card = rowToCard(row as Record<string, unknown>);
+      const out = {
+        id: card.id,
+        front: card.front,
+        back: card.back,
+        ipa: card.ipa,
+        examples: card.examples,
+        tags: card.tags,
+        image_url: card.image_url,
+        due_at: card.due_at,
+        state: card.state,
+        reps: card.reps,
+        lapses: card.lapses,
+      };
+      return {
+        content: [{ type: 'text', text: `Edited card ${card.id}` }],
+        structuredContent: out,
+      };
+    },
+  );
+
+  async function setCardStatus(cardId: string, status: 'suspended' | 'ready') {
+    const { userId, db } = readCtx();
+    const updateRes = await db.execute({
+      sql: 'UPDATE cards SET status = ? WHERE id = ? AND user_id = ?',
+      args: [status, cardId, userId],
+    });
+    if (updateRes.rowsAffected === 0) {
+      return {
+        isError: true,
+        content: [{ type: 'text' as const, text: `Card not found: ${cardId}` }],
+      };
+    }
+    const { rows } = await withReadRetry(() =>
+      db.execute({
+        sql: 'SELECT * FROM cards WHERE id = ? AND user_id = ? LIMIT 1',
+        args: [cardId, userId],
+      }),
+    );
+    const row = rows[0];
+    if (!row) {
+      return {
+        isError: true,
+        content: [{ type: 'text' as const, text: `Card not found: ${cardId}` }],
+      };
+    }
+    const card = rowToCard(row as Record<string, unknown>);
+    const out = {
+      id: card.id,
+      front: card.front,
+      back: card.back,
+      ipa: card.ipa,
+      examples: card.examples,
+      tags: card.tags,
+      image_url: card.image_url,
+      due_at: card.due_at,
+      state: card.state,
+      reps: card.reps,
+      lapses: card.lapses,
+    };
+    const verb = status === 'suspended' ? 'Suspended' : 'Unsuspended';
+    return {
+      content: [{ type: 'text' as const, text: `${verb} card ${card.id}` }],
+      structuredContent: out,
+    };
+  }
+
+  server.registerTool(
+    'suspend_card',
+    {
+      description: [
+        'Pull a card out of review rotation without deleting it.',
+        '',
+        'A suspended card is skipped by `get_due` and cannot be rated (until unsuspended). Idempotent — suspending an already-suspended card is a no-op success.',
+      ].join('\n'),
+      inputSchema: {
+        card_id: z.string().min(1),
+      },
+      outputSchema: fullCardShape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (args) => setCardStatus(args.card_id, 'suspended'),
+  );
+
+  server.registerTool(
+    'unsuspend_card',
+    {
+      description: [
+        'Return a suspended card to normal review rotation.',
+        '',
+        'Idempotent — unsuspending an already-ready card is a no-op success. The card\'s next `due_at` is preserved; it reappears in `get_due` the next time it becomes due.',
+      ].join('\n'),
+      inputSchema: {
+        card_id: z.string().min(1),
+      },
+      outputSchema: fullCardShape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (args) => setCardStatus(args.card_id, 'ready'),
+  );
+
+  server.registerTool(
+    'delete_card',
+    {
+      description: [
+        'Permanently delete a card and **all its review history**. This cannot be undone.',
+        '',
+        '**Before calling this tool, confirm with the user.** State the card (front/back) you\'re about to delete and ask for explicit confirmation. Do not call on a vague request like "clean up my deck" — identify the specific card first.',
+        '',
+        'If the user might want the card back later, suggest `suspend_card` instead.',
+      ].join('\n'),
+      inputSchema: {
+        card_id: z.string().min(1),
+      },
+      outputSchema: {
+        id: z.string(),
+        deleted: z.boolean(),
+        reviews_deleted: z.number().int(),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (args) => {
+      const { userId, db } = readCtx();
+      const { rows } = await withReadRetry(() =>
+        db.execute({
+          sql: 'SELECT id FROM cards WHERE id = ? AND user_id = ? LIMIT 1',
+          args: [args.card_id, userId],
+        }),
+      );
+      if (rows.length === 0) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Card not found: ${args.card_id}` }],
+        };
+      }
+      const results = await db.batch(
+        [
+          {
+            sql: 'DELETE FROM reviews WHERE card_id = ? AND user_id = ?',
+            args: [args.card_id, userId],
+          },
+          {
+            sql: 'DELETE FROM cards WHERE id = ? AND user_id = ?',
+            args: [args.card_id, userId],
+          },
+        ],
+        'write',
+      );
+      const reviewsDeleted = Number(results[0]?.rowsAffected ?? 0);
+      const out = {
+        id: args.card_id,
+        deleted: true,
+        reviews_deleted: reviewsDeleted,
+      };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Deleted card ${args.card_id} (and ${reviewsDeleted} review(s))`,
+          },
+        ],
+        structuredContent: out,
+      };
+    },
+  );
+
   server.registerTool(
     'submit_rating',
     {
@@ -392,6 +650,17 @@ export function createServer(): McpServer {
         };
       }
       const card: Card = rowToCard(row as Record<string, unknown>);
+      if (card.status !== 'ready') {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Card is suspended: ${card.id}. Call \`unsuspend_card\` first.`,
+            },
+          ],
+        };
+      }
       const delta = applyRating(card, args.rating as RatingValue);
 
       await db.batch(
