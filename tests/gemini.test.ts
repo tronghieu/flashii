@@ -85,6 +85,42 @@ describe('generateImage', () => {
     if (!r.ok) expect(r.reason).toBe('no_candidates');
   });
 
+  it('returns timeout when fetch aborts via AbortSignal', async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      // Simulate a stalled upstream: wait for the signal to abort, then throw.
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error('test expected a signal');
+        const onAbort = () => {
+          const err = new Error('aborted');
+          err.name = 'TimeoutError';
+          reject(err);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+    }) as unknown as typeof fetch;
+    const r = await generateImage('x', 'fake-key', { fetchImpl, timeoutMs: 10 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain('timeout');
+  });
+
+  it('returns decode_error when inlineData is malformed base64', async () => {
+    const fetchImpl = mockJson({
+      candidates: [
+        {
+          content: {
+            parts: [{ inlineData: { mimeType: 'image/png', data: '!!!not-base64!!!' } }],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+    });
+    const r = await generateImage('x', 'fake-key', { fetchImpl });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain('decode_error');
+  });
+
   it('uses the configured model in the endpoint URL', async () => {
     const fetchImpl = vi.fn(
       async () =>

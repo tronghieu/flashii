@@ -3,6 +3,7 @@
 // "model refused" without try/catch noise. Never throws.
 
 export const DEFAULT_IMAGE_MODEL = 'gemini-3-pro-image-preview';
+export const DEFAULT_TIMEOUT_MS = 30_000;
 
 function endpoint(model: string): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -32,6 +33,7 @@ interface GenerateContentResponse {
 export interface GenerateImageOptions {
   model?: string;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }
 
 export async function generateImage(
@@ -41,6 +43,7 @@ export async function generateImage(
 ): Promise<GeminiImageResult> {
   const model = opts.model ?? DEFAULT_IMAGE_MODEL;
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let res: Response;
   try {
     res = await fetchImpl(endpoint(model), {
@@ -56,9 +59,14 @@ export async function generateImage(
           imageConfig: { aspectRatio: '1:1', imageSize: '1K' },
         },
       }),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    return { ok: false, reason: `network_error: ${(err as Error).message}` };
+    const e = err as Error;
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      return { ok: false, reason: `timeout: ${timeoutMs}ms` };
+    }
+    return { ok: false, reason: `network_error: ${e.message}` };
   }
 
   if (!res.ok) {
@@ -87,7 +95,12 @@ export async function generateImage(
     return { ok: false, reason: `no_image: finishReason=${candidate.finishReason ?? 'unknown'}` };
   }
 
-  const bytes = base64ToBytes(inlinePart.inlineData.data);
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(inlinePart.inlineData.data);
+  } catch (err) {
+    return { ok: false, reason: `decode_error: ${(err as Error).message}` };
+  }
   const mimeType = inlinePart.inlineData.mimeType ?? 'image/png';
   return { ok: true, bytes, mimeType };
 }
