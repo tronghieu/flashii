@@ -9,6 +9,13 @@
 	"observability": {
 		"enabled": true
 	},
+	"secrets": {
+		"required": [
+			"TURSO_URL",
+			"TURSO_TOKEN",
+			"GEMINI_API_KEY"
+		]
+	},
 	"vars": {
 		"LOG_LEVEL": "info"
 	},
