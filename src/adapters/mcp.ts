@@ -154,10 +154,27 @@ export function createServer(): McpServer {
           lapses: c.lapses,
         };
       });
+      const text =
+        cards.length === 0
+          ? 'No cards due right now.'
+          : `${cards.length} card(s) due:\n\n` +
+            cards
+              .map((c, i) => {
+                const lines = [
+                  `${i + 1}. **${c.front}**  _(id: \`${c.id}\`)_`,
+                  `   - Back: ${c.back}`,
+                ];
+                if (c.ipa) lines.push(`   - IPA: /${c.ipa}/`);
+                if (c.examples.length) {
+                  lines.push('   - Examples:');
+                  for (const ex of c.examples) lines.push(`     - ${ex}`);
+                }
+                if (c.tags.length) lines.push(`   - Tags: ${c.tags.join(', ')}`);
+                return lines.join('\n');
+              })
+              .join('\n\n');
       return {
-        content: [
-          { type: 'text', text: `${cards.length} card(s) due` },
-        ],
+        content: [{ type: 'text', text }],
         structuredContent: { cards },
       };
     },
