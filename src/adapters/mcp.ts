@@ -4,6 +4,8 @@ import { getMcpAuthContext } from 'agents/mcp';
 import { z } from 'zod';
 import { buildCardUpdate, buildNewCard, rowToCard, tagFilterArg } from '../core/cards.js';
 import { applyRating } from '../core/reviews.js';
+import { computeStreak, daysLeft, targetPerDay } from '../core/progress.js';
+import { buildProfileUpdate, rowToProfile } from '../core/users.js';
 import type { Card, RatingValue } from '../core/types.js';
 import type { Client, InArgs } from '@libsql/client/web';
 import { withReadRetry } from '../infra/db.js';
@@ -45,6 +47,60 @@ const fullCardShape = {
   state: z.number(),
   reps: z.number(),
   lapses: z.number(),
+};
+
+const fullProfileShape = {
+  name: z.string(),
+  about: z.string().nullable(),
+  native_language: z.string().nullable(),
+  target_languages: z.array(z.string()),
+  interests: z.array(z.string()),
+  level: z.string().nullable(),
+  method: z.string().nullable(),
+  daily_time_minutes: z.number().nullable(),
+  timezone: z.string().nullable(),
+  goal_chunks: z.number().nullable(),
+  goal_deadline: z.string().nullable(),
+};
+
+const fullProgressShape = {
+  goal: z.object({
+    chunks: z.number().nullable(),
+    deadline: z.string().nullable(),
+    days_left: z.number().nullable(),
+  }),
+  totals: z.object({
+    created: z.number(),
+    learning: z.number(),
+    due: z.number(),
+    mature: z.number(),
+  }),
+  retention: z.object({
+    d7: z.number().nullable(),
+    d30: z.number().nullable(),
+  }),
+  streak: z.object({
+    current: z.number(),
+    longest: z.number(),
+  }),
+  create_rate: z.object({
+    last_7d: z.number(),
+    target_per_day: z.number().nullable(),
+  }),
+  leeches: z.array(
+    z.object({
+      card_id: z.string(),
+      front: z.string(),
+      again_count: z.number(),
+    }),
+  ),
+  by_tag: z.array(
+    z.object({
+      tag: z.string(),
+      count: z.number(),
+      mature: z.number(),
+    }),
+  ),
 };
 
 export function createServer(): McpServer {
@@ -718,6 +774,332 @@ export function createServer(): McpServer {
             text: `Regenerated image for ${existing.id}: ${newUrl}`,
           },
         ],
+        structuredContent: out,
+      };
+    },
+  );
+
+  server.registerTool(
+    'get_profile',
+    {
+      description: [
+        'Return the user\'s profile: name, bio, languages, interests, level/method, daily time budget, timezone, and chunk goal.',
+        '',
+        'Call this before coaching or when personalizing example generation — the profile is the source of truth for "who is this learner and what are they aiming at".',
+      ].join('\n'),
+      inputSchema: {},
+      outputSchema: fullProfileShape,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const { userId, db } = readCtx();
+      const { rows } = await withReadRetry(() =>
+        db.execute({
+          sql: 'SELECT * FROM users WHERE id = ? LIMIT 1',
+          args: [userId],
+        }),
+      );
+      const row = rows[0];
+      if (!row) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `User not found: ${userId}` }],
+        };
+      }
+      const profile = rowToProfile(row as Record<string, unknown>);
+      const summary = [
+        `Profile for ${profile.name}:`,
+        `- about: ${profile.about ?? '(not set)'}`,
+        `- native: ${profile.native_language ?? '(not set)'} · target: ${
+          profile.target_languages.length ? profile.target_languages.join(', ') : '(not set)'
+        }`,
+        `- level: ${profile.level ?? '(not set)'} · method: ${profile.method ?? '(not set)'}`,
+        `- interests: ${profile.interests.length ? profile.interests.join(', ') : '(not set)'}`,
+        `- daily time: ${
+          profile.daily_time_minutes == null ? '(not set)' : `${profile.daily_time_minutes} min`
+        } · timezone: ${profile.timezone ?? '(not set)'}`,
+        `- goal: ${profile.goal_chunks ?? '(none)'} chunks by ${profile.goal_deadline ?? '(no deadline)'}`,
+      ].join('\n');
+      return {
+        content: [{ type: 'text', text: summary }],
+        structuredContent: { ...profile },
+      };
+    },
+  );
+
+  const profileEmptyMsg = 'at least one profile field required';
+
+  server.registerTool(
+    'set_profile',
+    {
+      description: [
+        'Partial-update the user profile. Any subset of fields accepted; omitted fields are left untouched.',
+        '',
+        'Semantics:',
+        '- Passing `null` explicitly **clears** a nullable field (e.g. `{goal_deadline: null}` removes the deadline).',
+        '- Arrays overwrite the stored value. Pass `[]` to clear `target_languages` or `interests`.',
+        '- Empty payload is an error — call with at least one field.',
+        '',
+        'Use this when the user tells you something new about themselves ("I\'m learning for work", "interested in AI and cooking", "give me 30 min/day").',
+      ].join('\n'),
+      inputSchema: {
+        about: z.union([z.string().max(2000), z.null()]).optional(),
+        native_language: z.union([z.string().max(16), z.null()]).optional(),
+        target_languages: z.array(z.string().min(1).max(16)).max(8).optional(),
+        interests: z.array(z.string().min(1).max(64)).max(32).optional(),
+        level: z.union([z.string().max(8), z.null()]).optional(),
+        method: z.union([z.string().max(32), z.null()]).optional(),
+        daily_time_minutes: z.union([z.number().int().min(0).max(1440), z.null()]).optional(),
+        timezone: z.union([z.string().max(64), z.null()]).optional(),
+        goal_chunks: z.union([z.number().int().min(0).max(1_000_000), z.null()]).optional(),
+        goal_deadline: z.union([z.string().max(32), z.null()]).optional(),
+      },
+      outputSchema: fullProfileShape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (args) => {
+      const keys = [
+        'about', 'native_language', 'target_languages', 'interests',
+        'level', 'method', 'daily_time_minutes', 'timezone',
+        'goal_chunks', 'goal_deadline',
+      ] as const;
+      const hasAny = keys.some((k) => k in args && (args as Record<string, unknown>)[k] !== undefined);
+      if (!hasAny) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: profileEmptyMsg }],
+        };
+      }
+      const { userId, db } = readCtx();
+      // Build an input object that preserves `in`-semantics (explicit null vs absent).
+      const editInput: Record<string, unknown> = {};
+      for (const k of keys) {
+        if (k in args && (args as Record<string, unknown>)[k] !== undefined) {
+          editInput[k] = (args as Record<string, unknown>)[k];
+        }
+      }
+      const { setClauses, bindArgs } = buildProfileUpdate(editInput);
+      const updateRes = await db.execute({
+        sql: `UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`,
+        args: [...bindArgs, userId] as InArgs,
+      });
+      if (updateRes.rowsAffected === 0) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `User not found: ${userId}` }],
+        };
+      }
+      const { rows } = await withReadRetry(() =>
+        db.execute({
+          sql: 'SELECT * FROM users WHERE id = ? LIMIT 1',
+          args: [userId],
+        }),
+      );
+      const row = rows[0];
+      if (!row) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `User not found: ${userId}` }],
+        };
+      }
+      const profile = rowToProfile(row as Record<string, unknown>);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Updated ${setClauses.length} profile field(s).`,
+          },
+        ],
+        structuredContent: { ...profile },
+      };
+    },
+  );
+
+  server.registerTool(
+    'get_progress',
+    {
+      description: [
+        'Single-snapshot coaching view: goal progress, totals, retention (7d/30d), streak, create-rate, top leeches, and tag distribution.',
+        '',
+        'Use this to answer "how am I doing?" — all numbers computed server-side in one round-trip. Claude interprets: nudge on target vs actual create rate, flag leeches, celebrate mature growth.',
+        '',
+        'Windows are fixed (7d / 30d); windows are not parameterised. Retention = share of ratings >= 3 in the window (null if no reviews). Mature = state=2 AND stability >= 21 (Anki convention). Streak uses UTC days.',
+      ].join('\n'),
+      inputSchema: {},
+      outputSchema: fullProgressShape,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async () => {
+      const { userId, db } = readCtx();
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const todayYmd = nowIso.slice(0, 10);
+      const cutoff7 = new Date(now.getTime() - 7 * 86400000).toISOString();
+      const cutoff30 = new Date(now.getTime() - 30 * 86400000).toISOString();
+      const cutoff90 = new Date(now.getTime() - 90 * 86400000).toISOString();
+
+      const results = await withReadRetry(() =>
+        db.batch(
+          [
+            {
+              sql: 'SELECT goal_chunks, goal_deadline FROM users WHERE id = ? LIMIT 1',
+              args: [userId],
+            },
+            {
+              sql: `SELECT
+                      COUNT(*) AS created,
+                      SUM(CASE WHEN state IN (0,1,3) THEN 1 ELSE 0 END) AS learning,
+                      SUM(CASE WHEN status='ready' AND due_at <= ? THEN 1 ELSE 0 END) AS due,
+                      SUM(CASE WHEN state=2 AND stability >= 21 THEN 1 ELSE 0 END) AS mature
+                    FROM cards WHERE user_id = ?`,
+              args: [nowIso, userId],
+            },
+            {
+              sql: `SELECT CASE WHEN COUNT(*) = 0 THEN NULL
+                          ELSE AVG(CASE WHEN rating >= 3 THEN 1.0 ELSE 0.0 END) END AS r
+                    FROM reviews WHERE user_id = ? AND reviewed_at >= ?`,
+              args: [userId, cutoff7],
+            },
+            {
+              sql: `SELECT CASE WHEN COUNT(*) = 0 THEN NULL
+                          ELSE AVG(CASE WHEN rating >= 3 THEN 1.0 ELSE 0.0 END) END AS r
+                    FROM reviews WHERE user_id = ? AND reviewed_at >= ?`,
+              args: [userId, cutoff30],
+            },
+            {
+              sql: 'SELECT COUNT(*) AS c FROM cards WHERE user_id = ? AND created_at >= ?',
+              args: [userId, cutoff7],
+            },
+            {
+              sql: `SELECT r.card_id, c.front,
+                           SUM(CASE WHEN r.rating = 1 THEN 1 ELSE 0 END) AS again_count
+                    FROM reviews r
+                    JOIN cards c ON c.id = r.card_id AND c.user_id = r.user_id
+                    WHERE r.user_id = ?
+                    GROUP BY r.card_id, c.front
+                    HAVING again_count >= 3
+                    ORDER BY again_count DESC
+                    LIMIT 10`,
+              args: [userId],
+            },
+            {
+              sql: `SELECT t.value AS tag,
+                           COUNT(*) AS count,
+                           SUM(CASE WHEN c.state = 2 AND c.stability >= 21 THEN 1 ELSE 0 END) AS mature
+                    FROM cards c, json_each(c.tags) t
+                    WHERE c.user_id = ?
+                    GROUP BY t.value
+                    ORDER BY count DESC
+                    LIMIT 20`,
+              args: [userId],
+            },
+            {
+              sql: `SELECT DISTINCT substr(reviewed_at, 1, 10) AS ymd
+                    FROM reviews
+                    WHERE user_id = ? AND reviewed_at >= ?
+                    ORDER BY ymd ASC`,
+              args: [userId, cutoff90],
+            },
+          ],
+          'read',
+        ),
+      );
+
+      const rowsOf = (i: number): Record<string, unknown>[] =>
+        (results[i]?.rows ?? []) as Record<string, unknown>[];
+
+      const userRow = rowsOf(0)[0];
+      const goalChunks = userRow?.goal_chunks == null ? null : Number(userRow.goal_chunks);
+      const goalDeadline = userRow?.goal_deadline == null ? null : String(userRow.goal_deadline);
+
+      const totalsRow = rowsOf(1)[0];
+      const totals = {
+        created: Number(totalsRow?.created ?? 0),
+        learning: Number(totalsRow?.learning ?? 0),
+        due: Number(totalsRow?.due ?? 0),
+        mature: Number(totalsRow?.mature ?? 0),
+      };
+
+      const retentionNum = (r: unknown): number | null =>
+        r == null ? null : Number(r);
+      const ret7 = retentionNum(rowsOf(2)[0]?.r);
+      const ret30 = retentionNum(rowsOf(3)[0]?.r);
+
+      const createLast7 = Number(rowsOf(4)[0]?.c ?? 0);
+
+      const leeches = rowsOf(5).map((row) => ({
+        card_id: String(row.card_id),
+        front: String(row.front),
+        again_count: Number(row.again_count),
+      }));
+
+      const byTag = rowsOf(6).map((row) => ({
+        tag: String(row.tag),
+        count: Number(row.count),
+        mature: Number(row.mature ?? 0),
+      }));
+
+      const days = rowsOf(7).map((row) => String(row.ymd));
+      const streak = computeStreak(days, todayYmd);
+
+      const goalDaysLeft = daysLeft(goalDeadline, now);
+      const goal = {
+        chunks: goalChunks,
+        deadline: goalDeadline,
+        days_left: goalDaysLeft,
+      };
+      const targetPd = targetPerDay(goalChunks, totals.created, goalDaysLeft);
+
+      const out = {
+        goal,
+        totals,
+        retention: { d7: ret7, d30: ret30 },
+        streak,
+        create_rate: { last_7d: createLast7, target_per_day: targetPd },
+        leeches,
+        by_tag: byTag,
+      };
+
+      const pct = (v: number | null) =>
+        v == null ? 'n/a' : `${Math.round(v * 100)}%`;
+      const goalLine = goalChunks == null
+        ? 'Goal: (not set). Run `set_profile` to give Claude a target.'
+        : `Goal: ${totals.created}/${goalChunks} chunks (${Math.round(
+            (totals.created / Math.max(1, goalChunks)) * 100,
+          )}%)${goalDeadline ? ` by ${goalDeadline}` : ''}${
+            goalDaysLeft != null ? ` · ${goalDaysLeft}d left` : ''
+          }.`;
+      const rateLine = targetPd == null
+        ? `Create rate: ${createLast7}/7d. (No target — set a goal.)`
+        : `Create rate: ${createLast7}/7d vs target ${targetPd}/day.`;
+      const topLeech = leeches[0];
+      const leechLine = topLeech
+        ? `Top leech: "${topLeech.front}" (${topLeech.again_count} Agains) — consider editing or suspending.`
+        : 'No leeches detected.';
+      const topTag = byTag[0];
+      const tagLine = topTag
+        ? `Top tag: ${topTag.tag} (${topTag.count} cards, ${topTag.mature} mature).`
+        : 'No tags yet.';
+      const retLine = `Retention: 7d ${pct(ret7)} · 30d ${pct(ret30)}. Streak: ${streak.current}d (longest ${streak.longest}d).`;
+      const text = [goalLine, rateLine, retLine, leechLine, tagLine].join('\n');
+
+      return {
+        content: [{ type: 'text', text }],
         structuredContent: out,
       };
     },

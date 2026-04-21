@@ -123,13 +123,13 @@ export function buildCardUpdate(input: CardEditInput): CardUpdateSql {
   return { setClauses, bindArgs };
 }
 
-function parseStringArray(raw: unknown, field: string, cardId: string): string[] {
+export function parseStringArray(raw: unknown, field: string, ownerId: string): string[] {
   try {
     const parsed = JSON.parse(String(raw));
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((v): v is string => typeof v === 'string');
   } catch (err) {
-    console.warn(`rowToCard: bad JSON in ${field} for card ${cardId}`, err);
+    console.warn(`parseStringArray: bad JSON in ${field} for ${ownerId}`, err);
     return [];
   }
 }

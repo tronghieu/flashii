@@ -2,6 +2,7 @@
 import { Rating, State } from 'ts-fsrs';
 
 export { Rating, State };
+export type { Profile } from './users.js';
 
 export type RatingValue = 1 | 2 | 3 | 4;
 
