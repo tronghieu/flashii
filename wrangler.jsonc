@@ -1,24 +1,26 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "flashii-api",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-04-01",
-  "compatibility_flags": ["nodejs_compat"],
-  "observability": {
-    "enabled": true
-  },
-  "vars": {
-    "LOG_LEVEL": "info"
-  },
-  "r2_buckets": [
-    {
-      "binding": "IMAGES",
-      "bucket_name": "flashii-card-images"
-    }
-  ]
-  // Custom domain (api.flashii.app) and TURSO_URL/TURSO_TOKEN/GEMINI_API_KEY are added later via:
-  //   wrangler secret put TURSO_URL
-  //   wrangler secret put TURSO_TOKEN
-  //   wrangler secret put GEMINI_API_KEY
-  // Routes block will be added once the zone is on the Cloudflare account.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "flashii-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-04-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"LOG_LEVEL": "info"
+	},
+	"r2_buckets": [
+		{
+			"binding": "IMAGES",
+			"bucket_name": "flashii-card-images"
+		}
+	]
+	// Custom domain (api.flashii.app) and TURSO_URL/TURSO_TOKEN/GEMINI_API_KEY are added later via:
+	//   wrangler secret put TURSO_URL
+	//   wrangler secret put TURSO_TOKEN
+	//   wrangler secret put GEMINI_API_KEY
+	// Routes block will be added once the zone is on the Cloudflare account.
 }

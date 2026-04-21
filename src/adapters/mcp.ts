@@ -240,6 +240,122 @@ export function createServer(): McpServer {
   );
 
   server.registerTool(
+    'list_cards',
+    {
+      description: [
+        'Browse the user\'s deck. Returns cards in pages, optionally filtered by tags or a free-text search.',
+        '',
+        'Use this when the user asks "what cards do I have", "find my cards about X", or wants to inspect/edit a specific card. For active study sessions use `get_due` instead — it filters to cards actually due now.',
+        '',
+        'Filters (all optional, AND-combined):',
+        '- `tags`: any-match against card tags.',
+        '- `search`: case-insensitive substring match on front or back.',
+        '',
+        'Pagination: `limit` + `offset`. Response includes `has_more`; increment offset by `limit` to fetch the next page.',
+      ].join('\n'),
+      inputSchema: {
+        tags: z.array(z.string().min(1).max(64)).max(16).optional(),
+        search: z.string().min(1).max(200).optional(),
+        order: z.enum(['newest', 'oldest', 'due_soon']).default('newest'),
+        limit: z.number().int().min(1).max(100).default(20),
+        offset: z.number().int().min(0).default(0),
+      },
+      outputSchema: {
+        cards: z.array(z.object(fullCardShape)),
+        has_more: z.boolean(),
+        next_offset: z.number().int().nullable(),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (args) => {
+      const { userId, db } = readCtx();
+      const tagsJson = tagFilterArg(args.tags);
+      const searchTerm = args.search?.trim();
+      const searchLike = searchTerm ? `%${searchTerm}%` : null;
+      const orderClause =
+        args.order === 'oldest'
+          ? 'created_at ASC'
+          : args.order === 'due_soon'
+            ? 'due_at ASC'
+            : 'created_at DESC';
+      // Fetch limit+1 to detect has_more without a second COUNT query.
+      const fetchLimit = args.limit + 1;
+      const { rows } = await withReadRetry(() =>
+        db.execute({
+          sql: `
+            SELECT * FROM cards c
+            WHERE c.user_id = ?1
+              AND (?2 = '[]' OR EXISTS (
+                SELECT 1 FROM json_each(c.tags) ct
+                JOIN json_each(?2) qt ON qt.value = ct.value
+              ))
+              AND (?3 IS NULL OR c.front LIKE ?3 COLLATE NOCASE OR c.back LIKE ?3 COLLATE NOCASE)
+            ORDER BY ${orderClause}
+            LIMIT ?4 OFFSET ?5
+          `,
+          args: [userId, tagsJson, searchLike, fetchLimit, args.offset],
+        }),
+      );
+      const hasMore = rows.length > args.limit;
+      const trimmed = hasMore ? rows.slice(0, args.limit) : rows;
+      const cards = trimmed.map((r) => {
+        const c = rowToCard(r as Record<string, unknown>);
+        return {
+          id: c.id,
+          front: c.front,
+          back: c.back,
+          ipa: c.ipa,
+          examples: c.examples,
+          tags: c.tags,
+          image_url: c.image_url,
+          due_at: c.due_at,
+          state: c.state,
+          reps: c.reps,
+          lapses: c.lapses,
+        };
+      });
+      const nextOffset = hasMore ? args.offset + args.limit : null;
+      const filterDesc = [
+        args.tags?.length ? `tags=[${args.tags.join(',')}]` : null,
+        searchTerm ? `search="${searchTerm}"` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      const header =
+        cards.length === 0
+          ? `No cards found${filterDesc ? ` (${filterDesc})` : ''}.`
+          : `${cards.length} card(s)${filterDesc ? ` matching ${filterDesc}` : ''}` +
+            (hasMore ? ` (more available — next offset ${nextOffset}):` : ':');
+      const text =
+        cards.length === 0
+          ? header
+          : header +
+            '\n\n' +
+            cards
+              .map((c, i) => {
+                const lines = [
+                  `${args.offset + i + 1}. **${c.front}**  _(id: \`${c.id}\`)_`,
+                  `   - Back: ${c.back}`,
+                ];
+                if (c.ipa) lines.push(`   - IPA: /${c.ipa}/`);
+                if (c.tags.length) lines.push(`   - Tags: ${c.tags.join(', ')}`);
+                lines.push(`   - Due: ${c.due_at} · reps: ${c.reps} · lapses: ${c.lapses}`);
+                return lines.join('\n');
+              })
+              .join('\n\n');
+      return {
+        content: [{ type: 'text', text }],
+        structuredContent: { cards, has_more: hasMore, next_offset: nextOffset },
+      };
+    },
+  );
+
+  server.registerTool(
     'submit_rating',
     {
       description:
