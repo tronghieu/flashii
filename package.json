@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "migrate": "tsx scripts/migrate.ts",
-    "issue-key": "tsx scripts/issue-key.ts"
+    "issue-key": "tsx scripts/issue-key.ts",
+    "rotate-key": "tsx scripts/rotate-key.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.17.2",
