@@ -6,10 +6,20 @@
       "sourceType": "github",
       "computedHash": "f87ea54de1ad7d8197a21640888af6ccb2e912682710658a9bafb5df0093df61"
     },
+    "gemini-api-dev": {
+      "source": "google-gemini/gemini-skills",
+      "sourceType": "github",
+      "computedHash": "a72a3164552bd1764bca52d33806f4578572af3c279611a5bda420b6a9ca68c4"
+    },
     "mcp-builder": {
       "source": "anthropics/skills",
       "sourceType": "github",
       "computedHash": "826e46adf81e1372282e205c34e1a2ee876e72148007726e4a2512599d2fef7b"
+    },
+    "system-prompt-creator": {
+      "source": "tronghieu/agent-skills",
+      "sourceType": "github",
+      "computedHash": "28a2713cbf39b36dc8f86fc023389084d4d7bcf20d38d3f8d28546c02cadb24c"
     }
   }
 }
