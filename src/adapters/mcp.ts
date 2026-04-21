@@ -614,6 +614,116 @@ export function createServer(): McpServer {
   );
 
   server.registerTool(
+    'regenerate_image',
+    {
+      description: [
+        'Generate a new mnemonic image for an existing card and replace the current one. Use when:',
+        '- The original `add_card` call failed image generation (card has `image_url=null`).',
+        '- The user wants a different image style or subject framing.',
+        '- The existing image is off-topic for the card.',
+        '',
+        'If the user already has an image on this card, confirm before overwriting — the previous image is gone after this call (R2 object is overwritten at the same key).',
+        '',
+        '`image_prompt` is optional. If omitted, a prompt is derived from the card\'s front + back. Provide one for more control (see the Nano Banana Pro guidance in `add_card`).',
+        '',
+        'Failure handling: unlike `add_card` (fail-open), this tool returns an error if image generation fails — the card\'s existing `image_url` is left untouched.',
+      ].join('\n'),
+      inputSchema: {
+        card_id: z.string().min(1),
+        image_prompt: z.string().min(1).max(2000).optional(),
+      },
+      outputSchema: fullCardShape,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (args) => {
+      const { userId, db, env, baseUrl } = readCtx();
+      const { rows } = await withReadRetry(() =>
+        db.execute({
+          sql: 'SELECT * FROM cards WHERE id = ? AND user_id = ? LIMIT 1',
+          args: [args.card_id, userId],
+        }),
+      );
+      const row = rows[0];
+      if (!row) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: `Card not found: ${args.card_id}` }],
+        };
+      }
+      const existing = rowToCard(row as Record<string, unknown>);
+      const prompt =
+        args.image_prompt?.trim() || `${existing.front}: ${existing.back}`;
+      const result = await generateImage(prompt, env.GEMINI_API_KEY, {
+        model: env.GEMINI_IMAGE_MODEL,
+      });
+      if (!result.ok) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Image generation failed: ${result.reason}. Existing image_url is unchanged.`,
+            },
+          ],
+        };
+      }
+      let newUrl: string;
+      try {
+        newUrl = await storeImage(
+          env,
+          baseUrl,
+          userId,
+          existing.id,
+          result.bytes,
+          result.mimeType,
+        );
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `R2 upload failed: ${(err as Error).message}. Existing image_url is unchanged.`,
+            },
+          ],
+        };
+      }
+      await db.execute({
+        sql: 'UPDATE cards SET image_url = ? WHERE id = ? AND user_id = ?',
+        args: [newUrl, existing.id, userId],
+      });
+      const updated = { ...existing, image_url: newUrl };
+      const out = {
+        id: updated.id,
+        front: updated.front,
+        back: updated.back,
+        ipa: updated.ipa,
+        examples: updated.examples,
+        tags: updated.tags,
+        image_url: updated.image_url,
+        due_at: updated.due_at,
+        state: updated.state,
+        reps: updated.reps,
+        lapses: updated.lapses,
+      };
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Regenerated image for ${existing.id}: ${newUrl}`,
+          },
+        ],
+        structuredContent: out,
+      };
+    },
+  );
+
+  server.registerTool(
     'submit_rating',
     {
       description:

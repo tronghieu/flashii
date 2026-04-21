@@ -7,3 +7,4 @@ local.db-*
 *.log
 .DS_Store
 worker-configuration.d.ts
+.gemini/settings.json
