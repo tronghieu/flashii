@@ -16,8 +16,8 @@ Source: `_bmad-output/planning-artifacts/product-brief.md` §7 Roadmap
 ### G3 — Polish tools (Week 3) — split per goal (2026-04-21)
 - `edit_card` + `suspend_card` — small CRUD spec, independent of image pipeline.
 - ~~`regenerate_image`~~ — **shipped 2026-04-21** alongside the edit/suspend/delete tool batch. Reuses `generateImage` + `storeImage` from the image pipeline; overwrites the R2 object at the same `{userId}/{cardId}.png` key. Fails fast (returns error, keeps old `image_url`) — different from `add_card` which is fail-open — because user explicitly requested the regeneration.
-- `get_progress` — single aggregation query; standalone spec.
-- `explain_mistake` — re-evaluate need; brief says "mostly Claude-side". Likely delete from roadmap if Claude can self-coach from `get_progress` + conversation context.
+- `get_progress` — see spec-get-progress.md (2026-04-21).
+- ~~`explain_mistake`~~ — **removed from roadmap 2026-04-21**. Brief §5 Flow 2 explicitly says "Claude explains the mistake conversationally using context already in the session — no extra server round-trip required". Claude reads card + user's answer + chat context; no server tool needed.
 - Usage logging + cost monitoring — cross-cutting infra; defer until first cost surprise.
 - **Depends on**: G1, partially spec-image-pipeline (`regenerate_image` only).
 
