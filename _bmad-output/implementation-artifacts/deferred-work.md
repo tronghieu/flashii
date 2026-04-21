@@ -7,18 +7,19 @@ Goals split out of the initial scope. Pick up after the active spec is shipped.
 Source: `_bmad-output/planning-artifacts/product-brief.md` §7 Roadmap
 
 ### G2 — Image generation (Week 2)
-- Integrate Gemini Nano Banana Pro for `needs_image=true` flow
-- R2 upload pipeline (`bucket/user_id/card_id.png`)
-- `add_from_text` tool (paragraph → candidate chunks via simple tokenization)
-- Validate Claude iOS Connector mobile flow
+- ~~Integrate Gemini Nano Banana Pro for `needs_image=true` flow~~ → split into spec-image-pipeline (2026-04-21)
+- ~~R2 upload pipeline (`bucket/user_id/card_id.png`)~~ → split into spec-image-pipeline (2026-04-21)
+- `add_from_text` tool (paragraph → candidate chunks via simple tokenization) — **deferred**: brief notes server-side is "simple tokenization", but Claude can already extract chunks conversationally without a server tool. Revisit only if user reports the conversational flow is too slow.
+- Validate Claude iOS Connector mobile flow — manual test; not a code task.
 - **Depends on**: G1 (MCP skeleton)
 
-### G3 — Polish tools (Week 3)
-- `edit_card`, `regenerate_image`, `suspend_card`
-- `get_progress` (aggregated stats for Claude-side coaching)
-- `explain_mistake` (optional, mostly Claude-side)
-- Usage logging, cost monitoring
-- **Depends on**: G1, partially G2 (`regenerate_image` needs image pipeline)
+### G3 — Polish tools (Week 3) — split per goal (2026-04-21)
+- `edit_card` + `suspend_card` — small CRUD spec, independent of image pipeline.
+- `regenerate_image` — depends on spec-image-pipeline.
+- `get_progress` — single aggregation query; standalone spec.
+- `explain_mistake` — re-evaluate need; brief says "mostly Claude-side". Likely delete from roadmap if Claude can self-coach from `get_progress` + conversation context.
+- Usage logging + cost monitoring — cross-cutting infra; defer until first cost surprise.
+- **Depends on**: G1, partially spec-image-pipeline (`regenerate_image` only).
 
 ### G4 — Family CLI (Week 4+)
 - CLI: `flashii user add "<name>"` → issue API key

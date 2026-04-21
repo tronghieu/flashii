@@ -7,24 +7,30 @@ import { applyRating } from '../core/reviews.js';
 import type { Card, RatingValue } from '../core/types.js';
 import type { Client } from '@libsql/client/web';
 import { withReadRetry } from '../infra/db.js';
+import { generateImage } from '../infra/gemini.js';
+import { storeImage } from '../infra/images.js';
+import type { Env } from '../infra/env.js';
 
 interface ToolCtx {
   userId: string;
   db: Client;
+  env: Env;
+  baseUrl: string;
 }
 
 function readCtx(): ToolCtx {
   const auth = getMcpAuthContext();
   const props = (auth?.props ?? {}) as Partial<ToolCtx>;
-  if (!props.userId || !props.db) {
-    throw new Error('Missing auth context: userId/db not propagated');
+  if (!props.userId || !props.db || !props.env || !props.baseUrl) {
+    throw new Error('Missing auth context: userId/db/env/baseUrl not propagated');
   }
-  return { userId: props.userId, db: props.db };
+  return { userId: props.userId, db: props.db, env: props.env, baseUrl: props.baseUrl };
 }
 
 const cardShape = {
   id: z.string(),
   due_at: z.string(),
+  image_url: z.string().nullable().optional(),
 };
 
 const fullCardShape = {
@@ -50,14 +56,33 @@ export function createServer(): McpServer {
   server.registerTool(
     'add_card',
     {
-      description:
-        'Add a finished flashcard. Provide front/back/examples/tags. Image generation is not available in this MVP — omit needs_image.',
+      description: [
+        'Add a finished flashcard. Provide front/back/examples/tags.',
+        '',
+        'Image generation (optional): set `needs_image=true` and provide `image_prompt` to generate a mnemonic image with Gemini Nano Banana Pro.',
+        '',
+        'When to request an image:',
+        '- Use for **concrete, visualizable nouns or scenes**: "sourdough loaf", "rusty padlock", "phở bowl with steam".',
+        '- Skip for abstract concepts, function words, grammar patterns, or anything that would be a generic stock photo.',
+        '- Skip if the user is reviewing fast and you sense image cost is wasteful.',
+        '',
+        'How to write `image_prompt` for Nano Banana Pro:',
+        '- Write a **scene description**, not just the word. Include subject + setting + lighting + style.',
+        '- Use concrete visual nouns. Avoid abstract language.',
+        '- 1-3 sentences works well; the model handles detail.',
+        '- Example (good): `A crusty sourdough loaf cut in half on a wooden board, warm window light, rustic kitchen, food-photography style.`',
+        '- Example (bad): `bread`',
+        '',
+        'Failure handling: if image generation fails or is blocked by safety, the card is still created with `image_url=null`. You can retry later with `regenerate_image` (not yet available).',
+      ].join('\n'),
       inputSchema: {
         front: z.string().min(1).max(200),
         back: z.string().min(1).max(2000),
         ipa: z.string().max(200).optional(),
         examples: z.array(z.string().min(1).max(500)).min(2).max(3),
         tags: z.array(z.string().min(1).max(64)).max(16).default([]),
+        needs_image: z.boolean().default(false),
+        image_prompt: z.string().min(1).max(2000).optional(),
       },
       outputSchema: cardShape,
       annotations: {
@@ -68,7 +93,16 @@ export function createServer(): McpServer {
       },
     },
     async (args) => {
-      const { userId, db } = readCtx();
+      if (args.needs_image && !args.image_prompt?.trim()) {
+        return {
+          isError: true,
+          content: [
+            { type: 'text', text: 'image_prompt is required when needs_image=true.' },
+          ],
+        };
+      }
+
+      const { userId, db, env, baseUrl } = readCtx();
       const row = buildNewCard(
         {
           front: args.front,
@@ -79,22 +113,46 @@ export function createServer(): McpServer {
         },
         userId,
       );
+
+      let imageUrl: string | null = null;
+      let imageNote = '';
+      if (args.needs_image && args.image_prompt) {
+        const result = await generateImage(args.image_prompt, env.GEMINI_API_KEY, {
+          model: env.GEMINI_IMAGE_MODEL,
+        });
+        if (result.ok) {
+          try {
+            imageUrl = await storeImage(env, baseUrl, userId, row.id, result.bytes, result.mimeType);
+          } catch (err) {
+            console.warn(`add_card: R2 store failed for ${row.id}:`, err);
+            imageNote = ' (image upload failed; retry later)';
+          }
+        } else {
+          console.warn(`add_card: image generation failed for ${row.id}: ${result.reason}`);
+          imageNote = ` (image not generated: ${result.reason})`;
+        }
+      }
+
       await db.execute({
         sql: `INSERT INTO cards
-                (id, user_id, front, back, ipa, examples, tags, status,
+                (id, user_id, front, back, ipa, examples, tags, image_url, status,
                  state, stability, difficulty, due_at, last_reviewed_at,
                  elapsed_days, scheduled_days, reps, lapses, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           row.id, row.user_id, row.front, row.back, row.ipa,
-          row.examples, row.tags, row.status,
+          row.examples, row.tags, imageUrl, row.status,
           row.state, row.stability, row.difficulty, row.due_at, row.last_reviewed_at,
           row.elapsed_days, row.scheduled_days, row.reps, row.lapses, row.created_at,
         ],
       });
-      const out = { id: row.id, due_at: row.due_at };
+
+      const out = { id: row.id, due_at: row.due_at, image_url: imageUrl };
+      const text = imageUrl
+        ? `Added card ${row.id} with image ${imageUrl}, due ${row.due_at}`
+        : `Added card ${row.id}, due ${row.due_at}${imageNote}`;
       return {
-        content: [{ type: 'text', text: `Added card ${row.id}, due ${row.due_at}` }],
+        content: [{ type: 'text', text }],
         structuredContent: out,
       };
     },
@@ -165,6 +223,7 @@ export function createServer(): McpServer {
                   `   - Back: ${c.back}`,
                 ];
                 if (c.ipa) lines.push(`   - IPA: /${c.ipa}/`);
+                if (c.image_url) lines.push(`   - ![mnemonic](${c.image_url})`);
                 if (c.examples.length) {
                   lines.push('   - Examples:');
                   for (const ex of c.examples) lines.push(`     - ${ex}`);
