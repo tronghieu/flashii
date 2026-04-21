@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildNewCard, newId, rowToCard, tagFilterArg } from '../src/core/cards.js';
+import { buildCardUpdate, buildNewCard, newId, rowToCard, tagFilterArg } from '../src/core/cards.js';
 import { applyRating } from '../src/core/reviews.js';
 import type { Card } from '../src/core/types.js';
 
@@ -77,6 +77,58 @@ describe('applyRating', () => {
     expect(delta.reviewRow.due_after).toBe(delta.cardUpdate.due_at);
     expect(delta.cardUpdate.last_reviewed_at).toBe(now.toISOString());
     expect(delta.cardUpdate.reps).toBeGreaterThan(0);
+  });
+});
+
+describe('buildCardUpdate', () => {
+  it('builds a single set clause for a single field', () => {
+    const { setClauses, bindArgs } = buildCardUpdate({ front: 'new front' });
+    expect(setClauses).toEqual(['front = ?']);
+    expect(bindArgs).toEqual(['new front']);
+  });
+
+  it('emits clauses in insertion order (front, back, ipa, examples, tags)', () => {
+    const { setClauses, bindArgs } = buildCardUpdate({
+      tags: ['t1'],
+      examples: ['e1', 'e2'],
+      ipa: 'ɪpə',
+      back: 'B',
+      front: 'F',
+    });
+    expect(setClauses).toEqual([
+      'front = ?',
+      'back = ?',
+      'ipa = ?',
+      'examples = ?',
+      'tags = ?',
+    ]);
+    expect(bindArgs).toEqual([
+      'F',
+      'B',
+      'ɪpə',
+      JSON.stringify(['e1', 'e2']),
+      JSON.stringify(['t1']),
+    ]);
+  });
+
+  it('JSON-stringifies tags and examples into bindArgs', () => {
+    const { bindArgs } = buildCardUpdate({
+      examples: ['a', 'b'],
+      tags: ['x', 'y'],
+    });
+    expect(bindArgs).toEqual([JSON.stringify(['a', 'b']), JSON.stringify(['x', 'y'])]);
+    expect(typeof bindArgs[0]).toBe('string');
+    expect(typeof bindArgs[1]).toBe('string');
+  });
+
+  it('accepts ipa: null to clear IPA', () => {
+    const { setClauses, bindArgs } = buildCardUpdate({ ipa: null });
+    expect(setClauses).toEqual(['ipa = ?']);
+    expect(bindArgs).toEqual([null]);
+  });
+
+  it('throws "no editable fields" on empty input', () => {
+    expect(() => buildCardUpdate({})).toThrow('no editable fields');
   });
 });
 
