@@ -6,3 +6,4 @@ local.db
 local.db-*
 *.log
 .DS_Store
+worker-configuration.d.ts

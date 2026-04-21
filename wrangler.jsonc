@@ -9,9 +9,16 @@
   },
   "vars": {
     "LOG_LEVEL": "info"
-  }
-  // Custom domain (api.flashii.app) and TURSO_URL/TURSO_TOKEN are added later via:
+  },
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "flashii-card-images"
+    }
+  ]
+  // Custom domain (api.flashii.app) and TURSO_URL/TURSO_TOKEN/GEMINI_API_KEY are added later via:
   //   wrangler secret put TURSO_URL
   //   wrangler secret put TURSO_TOKEN
+  //   wrangler secret put GEMINI_API_KEY
   // Routes block will be added once the zone is on the Cloudflare account.
 }
