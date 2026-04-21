@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flashii-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "LOG_LEVEL": "info"
+  }
+  // Custom domain (api.flashii.app) and TURSO_URL/TURSO_TOKEN are added later via:
+  //   wrangler secret put TURSO_URL
+  //   wrangler secret put TURSO_TOKEN
+  // Routes block will be added once the zone is on the Cloudflare account.
+}
