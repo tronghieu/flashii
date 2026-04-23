@@ -1,6 +1,54 @@
-# Flashii API
+# Flashii
 
-Flashii API is a Cloudflare Worker that exposes an authenticated MCP server for spaced-repetition flashcards. It stores structured learning data in Turso, generated card images in Cloudflare R2, and can optionally call Gemini to create mnemonic images during card creation.
+Flashii is an AI-native flashcard system for learning through conversation instead of a traditional flashcard app UI.
+
+The simplest way to understand it: Flashii is a personal memory layer that plugs into AI clients such as Claude Desktop, Claude iOS, or Claude Code through MCP. The learner talks to Claude to create cards, review due cards, and get coaching. Flashii handles the durable backend work: storing cards, scheduling reviews with FSRS, serving mnemonic images, and protecting access with API keys.
+
+Flashii was created as a lightweight Anki replacement for language learning, especially for learning lexical chunks such as collocations, phrase patterns, and useful expressions. It is optimized for depth and explanation rather than high-speed deck drilling.
+
+## What Flashii Is
+
+- A headless flashcard backend exposed through the Model Context Protocol (MCP)
+- A spaced-repetition system using FSRS scheduling
+- A personal learning database for cards, reviews, tags, progress, and user goals
+- An optional mnemonic image pipeline backed by Gemini and Cloudflare R2
+- A foundation for future adapters, such as a REST API or web app, without changing the core learning model
+
+## How It Feels To Use
+
+As a learner, you do not open a Flashii app. You open Claude and talk naturally.
+
+For card creation:
+
+1. Ask Claude for learning material, for example: "I want to learn lexical chunks about AI."
+2. Claude proposes useful chunks and helps refine the list.
+3. Claude writes the card content: definition, examples, IPA, tags, and optional image prompt.
+4. Claude calls Flashii through MCP to save the finished cards.
+5. Flashii stores the cards and, when requested, generates and stores mnemonic images.
+
+For daily review:
+
+1. Say: "Let's review."
+2. Claude asks Flashii for cards due now, optionally filtered by tags such as `AI` or `daily-life`.
+3. Claude quizzes you conversationally.
+4. After each answer, Claude submits your rating to Flashii.
+5. Flashii updates the FSRS schedule, while Claude can explain mistakes in plain language.
+
+For progress coaching:
+
+1. Ask: "How am I doing against my 1500-chunk goal?"
+2. Flashii returns aggregated progress data.
+3. Claude interprets the numbers, highlights drift, and suggests what to review or create next.
+
+## Who It Is For
+
+Flashii is best for learners who already use an AI assistant daily and want the assistant to become their tutor, not just a card generator. The MVP targets personal language learning on iPhone and Mac, with family use planned later through additional API keys.
+
+It is not designed for users who need to blast through very large decks with a tap-only interface, such as medical exam decks with tens of thousands of cards. For that workflow, a traditional app like Anki is still a better fit.
+
+## Current API Shape
+
+Flashii currently runs as a Cloudflare Worker that exposes an authenticated MCP server. It stores structured learning data in Turso, generated card images in Cloudflare R2, and can optionally call Gemini to create mnemonic images during card creation.
 
 The current production shape is:
 
