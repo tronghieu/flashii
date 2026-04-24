@@ -8,3 +8,4 @@ local.db-*
 .DS_Store
 worker-configuration.d.ts
 .gemini/settings.json
+.mcp.json
